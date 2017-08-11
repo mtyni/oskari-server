@@ -11,6 +11,7 @@ import fi.nls.oskari.util.IOHelper;
 import fi.nls.oskari.util.JSONHelper;
 import fi.nls.oskari.util.PropertyUtil;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
@@ -56,9 +57,9 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
     public static final String REQUEST_GETFEATURE_TEMPLATE = PropertyUtil.get(PROPERTY_SERVICE_GETFEATURE_TEMPLATE, DEFAULT_GETFEATURE_TEMPLATE);
     private static final String PROPERTY_SERVICE_GEOLOCATOR_LOCATIONTYPES = "search.channel.ELFGEOLOCATOR_CHANNEL.service.locationtype.json";
     public static final String LOCATIONTYPE_ATTRIBUTES = PropertyUtil.get(PROPERTY_SERVICE_GEOLOCATOR_LOCATIONTYPES, ID + ".json");
-    public static final String PROPERTY_AUTOCOMPLETE_URL = PropertyUtil.get("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.url");
-    public static final String PROPERTY_AUTOCOMPLETE_USERNAME = PropertyUtil.get("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.userName");
-    public static final String PROPERTY_AUTOCOMPLETE_PASSWORD = PropertyUtil.get("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.password");
+    public static final String PROPERTY_AUTOCOMPLETE_URL = PropertyUtil.getOptional("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.url");
+    public static final String PROPERTY_AUTOCOMPLETE_USERNAME = PropertyUtil.getOptional("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.userName");
+    public static final String PROPERTY_AUTOCOMPLETE_PASSWORD = PropertyUtil.getOptional("search.channel.ELFGEOLOCATOR_CHANNEL.autocomplete.password");
 
     // Parameters
     public static final String PARAM_NORMAL = "normal";
@@ -216,7 +217,7 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
         request = request.replace(KEY_LONGITUDE_HOLDER, lonlat[0]);
         request = request.replace(KEY_LANG_HOLDER, lang3);
         buf.append(request);
-        String data = "";
+        String data;
         try {
             data = IOHelper.readString(getConnection(buf.toString()));
             // Clean xml version for geotools parser for faster parse
@@ -236,6 +237,15 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
         return result;
     }
 
+    protected boolean hasWildcard(String query) {
+        return query != null && (query.contains("*") || query.contains("#"));
+    }
+
+    protected String getWildcardQuery(SearchCriteria searchCriteria) {
+        String postData = likeQueryXMLtemplate;
+        return postData.replace(LIKE_LITERAL_HOLDER, searchCriteria.getSearchString());
+    }
+
     /**
      * Returns the search raw results.
      *
@@ -252,11 +262,10 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
 
         // wildcard search
         String searchString = searchCriteria.getSearchString();
-        if (searchString != null && (searchString.contains("*") || searchString.contains("#"))) {
+        if (hasWildcard(searchString)) {
             log.debug("Wildcard search: ", searchString);
 
-            String postData = likeQueryXMLtemplate;
-            postData = postData.replace(LIKE_LITERAL_HOLDER, searchString);
+            String postData = getWildcardQuery(searchCriteria);
 
             StringBuffer buf = new StringBuffer(serviceURL);
 
@@ -443,16 +452,14 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
     }
 
     public List<String> doSearchAutocomplete(String searchString) {
-        //TODO Get from properties
         if(PROPERTY_AUTOCOMPLETE_URL == null || PROPERTY_AUTOCOMPLETE_URL.isEmpty()) {
             return Collections.emptyList();
         }
-        String requestJson = 	"{ \"query\": { \"match\": { \"name\": { \"query\": \""+searchString+"\", \"analyzer\": \"standard\" } } } };";
         try {
             log.info("Creating autocomplete search url with url:", PROPERTY_AUTOCOMPLETE_URL);
             HttpURLConnection conn = IOHelper.getConnection(PROPERTY_AUTOCOMPLETE_URL,
                     PROPERTY_AUTOCOMPLETE_USERNAME, PROPERTY_AUTOCOMPLETE_PASSWORD);
-            IOHelper.writeToConnection(conn, requestJson);
+            IOHelper.writeToConnection(conn, getElasticQuery(searchString));
             String result = IOHelper.readString(conn);
             JSONObject jsonObject = new JSONObject(result);
 
@@ -468,5 +475,15 @@ public class ELFGeoLocatorSearchChannel extends SearchChannel implements SearchA
             log.error("Couldn't open or read from connection for search channel!");
             throw new RuntimeException("Couldn't open or read from connection!", ex);
         }
+    }
+
+    protected String getElasticQuery(String query) {
+        // { "query": { "match": { "name": { "query": "[user input]", "analyzer": "standard" } } } };";
+        JSONObject elasticQueryTemplate = JSONHelper.createJSONObject("{ \"query\": { \"match\": { \"name\": { \"analyzer\": \"standard\" } } } };");
+        try {
+            // set the actual search query
+            elasticQueryTemplate.optJSONObject("query").optJSONObject("match").optJSONObject("name").put("query", query);
+        } catch(Exception ignored) {}
+        return elasticQueryTemplate.toString();
     }
 }
